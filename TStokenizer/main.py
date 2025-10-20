@@ -4,13 +4,23 @@ import random
 import os
 import numpy as np
 import warnings
+import torch.utils._pytree as _torch_pytree
 
 warnings.filterwarnings('ignore')
 from dataset import Dataset
 from args import args
 from process import Trainer
-from model import VQVAE
+from model import TStokenizer
 import torch.utils.data as Data
+
+# Torch 2.1 exposes only `_register_pytree_node`, whereas newer libraries expect
+# `register_pytree_node` with keyword arguments. Provide a backward-compatible
+# shim when the public helper is absent.
+if not hasattr(_torch_pytree, "register_pytree_node"):
+    def _register_pytree_node_shim(node_type, flatten_fn, unflatten_fn, *args, **kwargs):
+        return _torch_pytree._register_pytree_node(node_type, flatten_fn, unflatten_fn)
+
+    _torch_pytree.register_pytree_node = _register_pytree_node_shim
 
 def seed_everything(seed):
     random.seed(seed)
@@ -34,7 +44,7 @@ def main():
     print(args.data_shape)
     print('dataset initial ends')
 
-    model = VQVAE(data_shape=args.data_shape, hidden_dim=args.d_model, n_embed=args.n_embed, block_num=args.block_num,
+    model = TStokenizer(data_shape=args.data_shape, hidden_dim=args.d_model, n_embed=args.n_embed, block_num=args.block_num,
                     wave_length=args.wave_length)
     print('model initial ends')
 
@@ -46,4 +56,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

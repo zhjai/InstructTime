@@ -6,7 +6,7 @@ from datautils import load_all_data
 parser = argparse.ArgumentParser()
 # dataset and dataloader args
 parser.add_argument('--save_path', type=str, default='./test')
-parser.add_argument('--dataset', type=str, default='sleep', choices=['har', 'geo', 'sleep', 'dev', 'ecg', 'whale', 'ad', 'esr'])
+parser.add_argument('--dataset', type=str, default='eeg', choices=['har', 'geo', 'sleep', 'dev', 'ecg', 'whale', 'ad', 'esr'])
 parser.add_argument('--data_path', type=str, default=None)
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--train_batch_size', type=int, default=32)
