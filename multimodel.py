@@ -4,8 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
-local_model_path = "./gpt2-model"
-local_tokenizer_path = "./gpt2-tokenizer"
+local_model_path = "./gpt2"
+local_tokenizer_path = "./gpt2"
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
@@ -114,7 +114,7 @@ class MultiTokenizer:
     def vocabSize_all(self):
         return self.text_vocab_size + sum(tokenizer.n_embed for tokenizer in self.ecgTokenizers)
 
-    def encode(self, input, model_id=1):
+    def encode(self, input, model_id=0):
         if isinstance(input, str):
             return self.textTokenizer(input)["input_ids"]
         elif isinstance(input, torch.Tensor):

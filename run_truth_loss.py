@@ -21,12 +21,8 @@ from args import get_hyperparams
 from metrics import metric_ecg, metric_eeg, metric_har, metric_fd, metric_rwc
 from utils import extract_all_information, load_TStokenizer
 
-local_model_path = "./gpt2-model"
-vqvae_path1 = "./ecg_tokenizer/test_ecg_64_128_40"
-vqvae_path2 = "./ecg_tokenizer/test_eeg_64_256_25"
-vqvae_path3 = "./ecg_tokenizer/test_fd_64_512_40"
-vqvae_path4 = "./ecg_tokenizer/test_har_64_256_1"
-vqvae_path5 = "./ecg_tokenizer/test_rwc_64_384_32"
+local_model_path = "./gpt2"
+vqvae_path = "./vqvae/HAR"
 
 def seed_everything(seed):
     random.seed(seed)
@@ -172,6 +168,7 @@ def initialize_model(args, tokenizer, TStokenizers):
     new_output = nn.Linear(config.n_embd, tokenizer.vocabSize_all(), bias=False).to(args.device)
     new_output.weight.data[:len(tokenizer.textTokenizer)] = current_output.weight.data
     model.set_output_embeddings(new_output)
+    model.config.vocab_size = tokenizer.vocabSize_all()
     
     sub_path = "no_frozen"
     
@@ -179,6 +176,9 @@ def initialize_model(args, tokenizer, TStokenizers):
 
 def train_model(model, args, TrainDataLoader, TestDataLoader, optimizer, scheduler, scaler, logger, run_path):
     best = 0.0
+    tolerance_metric = -float("inf")
+    patience = 5
+    wait = 0
         
     for epoch in range(args.epochs):
         step, train_losses = 0, 0.0
@@ -213,116 +213,52 @@ def train_model(model, args, TrainDataLoader, TestDataLoader, optimizer, schedul
         logger.info(f"Epoch {epoch+1}\nLoss: {final_loss}")
         
         res = test(model, TestDataLoader, args, logger, out=False)
-        print(res)
+        print(f"Epoch {epoch+1} accuracy: {res:.4f}")
+        logger.info(f"Epoch {epoch+1} accuracy: {res:.4f}")
+
         if res > best:
             MODEL_STORED_PATH = run_path + "/best_model"
             best = res
             model.save_pretrained(MODEL_STORED_PATH)
+        if res > tolerance_metric:
+            tolerance_metric = res
+            wait = 0
+        else:
+            wait += 1
+            if wait >= patience:
+                logger.info(f"Early stopping at epoch {epoch+1}")
+                break
 
 if __name__ == "__main__":
     args = get_hyperparams()
     seed_everything(args.seed)
 
-    if args.dataset == 'mix' or args.dataset == 'geo':
-        file_path = 'ecg_no_big'
-        train_path = os.path.join(file_path, 'samples_train.pkl')
-        test_path = os.path.join(file_path, 'samples_test.pkl')
-        if os.path.isfile(train_path) and os.path.isfile(test_path):
-            with open(train_path, 'rb') as file:
-                samples_train = pickle.load(file)
-            with open(test_path, 'rb') as file:
-                samples_test = pickle.load(file)
-        text1, ecg, _ = samples_train[0]
-        print(len(samples_train) + len(samples_test), len(samples_train), len(samples_test))
-        print(text1)
+    if args.dataset.lower() != 'har':
+        raise ValueError("This configuration only supports the 'har' dataset when using the single HAR tokenizer.")
 
-    if args.dataset == 'mix' or args.dataset == 'eeg':
-        file_path = 'eeg_no_big'
-        train_path = os.path.join(file_path, 'samples_train.pkl')
-        test_path = os.path.join(file_path, 'samples_test.pkl')
-        if os.path.isfile(train_path) and os.path.isfile(test_path):
-            with open(train_path, 'rb') as file:
-                samples_train_eeg = pickle.load(file)
-            with open(test_path, 'rb') as file:
-                samples_test_eeg = pickle.load(file)
-        text2, eeg, _ = samples_train_eeg[0]
-        print(len(samples_train_eeg) + len(samples_test_eeg), len(samples_train_eeg), len(samples_test_eeg))
-        print(text2)
+    file_path = 'datasets/HAR'
+    train_path = os.path.join(file_path, 'samples_train.pkl')
+    test_path = os.path.join(file_path, 'samples_test.pkl')
+    if os.path.isfile(train_path) and os.path.isfile(test_path):
+        with open(train_path, 'rb') as file:
+            samples_train_har = pickle.load(file)
+        with open(test_path, 'rb') as file:
+            samples_test_har = pickle.load(file)
+    else:
+        raise FileNotFoundError(f"HAR dataset not found in {file_path}")
 
-    if args.dataset == 'mix' or args.dataset == 'fd':
-        file_path = 'device_no_big'
-        train_path = os.path.join(file_path, 'samples_train.pkl')
-        test_path = os.path.join(file_path, 'samples_test.pkl')
-        if os.path.isfile(train_path) and os.path.isfile(test_path):
-            with open(train_path, 'rb') as file:
-                samples_train_fd = pickle.load(file)
-            with open(test_path, 'rb') as file:
-                samples_test_fd = pickle.load(file)
-        text3, fd, _ = samples_train_fd[0]
-        print(len(samples_train_fd) + len(samples_test_fd), len(samples_train_fd), len(samples_test_fd))
-        print(text3)
-
-    if args.dataset == 'mix' or args.dataset == 'har':
-        file_path = 'har_no_big'
-        train_path = os.path.join(file_path, 'samples_train.pkl')
-        test_path = os.path.join(file_path, 'samples_test.pkl')
-        if os.path.isfile(train_path) and os.path.isfile(test_path):
-            with open(train_path, 'rb') as file:
-                samples_train_har = pickle.load(file)
-            with open(test_path, 'rb') as file:
-                samples_test_har = pickle.load(file)
-        text4, har, _ = samples_train_har[0]
-        print(len(samples_train_har) + len(samples_test_har), len(samples_train_har), len(samples_test_har))
-        print(text4)
-        
-    if args.dataset == 'mix' or args.dataset == 'rwc':
-        file_path = 'rwc_no_big'
-        train_path = os.path.join(file_path, 'samples_train.pkl')
-        test_path = os.path.join(file_path, 'samples_test.pkl')
-        if os.path.isfile(train_path) and os.path.isfile(test_path):
-            with open(train_path, 'rb') as file:
-                samples_train_rwc = pickle.load(file)
-            with open(test_path, 'rb') as file:
-                samples_test_rwc = pickle.load(file)
-        text7, rwc, _ = samples_train_rwc[0]
-        print(len(samples_train_rwc) + len(samples_test_rwc), len(samples_train_rwc), len(samples_test_rwc))
-        print(text7)
+    text_har, har, _ = samples_train_har[0]
+    print(len(samples_train_har) + len(samples_test_har), len(samples_train_har), len(samples_test_har))
+    print(text_har)
         
     print('preprocess done')
 
-    if args.dataset == 'mix':
-        samples_train_combined = samples_train + samples_train_eeg + samples_train_har + samples_train_fd + samples_train_rwc
-        samples_test_combined = samples_test + samples_test_eeg + samples_test_har + samples_test_fd + samples_test_rwc
-        np.random.shuffle(samples_train_combined)
-        np.random.shuffle(samples_test_combined)
-        PREFIX_TEXT = "You will be receiving signals from five domains: electrocardiogram, electroencephalogram, industrial equipment, sound and physical activities.\n"
-    elif args.dataset == 'geo':
-        samples_train_combined = samples_train
-        samples_test_combined = samples_test
-        PREFIX_TEXT = "You will be receiving electrocardiogram(ECG) related signals.\n"
-    elif args.dataset == 'eeg':
-        samples_train_combined = samples_train_eeg
-        samples_test_combined = samples_test_eeg
-        PREFIX_TEXT = "You will be receiving electroencephalogram(EEG) related signals.\n"
-    elif args.dataset == 'fd':
-        samples_train_combined = samples_train_fd
-        samples_test_combined = samples_test_fd
-        PREFIX_TEXT = "You will be receiving industrial equipment related signals.\n"
-    elif args.dataset == 'rwc':
-        samples_train_combined = samples_train_rwc
-        samples_test_combined = samples_test_rwc
-        PREFIX_TEXT = "You will be receiving sound related signals.\n"
-    else:
-        samples_train_combined = samples_train_har
-        samples_test_combined = samples_test_har
-        PREFIX_TEXT = "You will be receiving human physical activities related signals.\n"
+    samples_train_combined = samples_train_har
+    samples_test_combined = samples_test_har
+    PREFIX_TEXT = "You will be receiving human physical activities related signals.\n"
 
-    TStokenizer1 = load_TStokenizer(vqvae_path1, ecg.shape, 'cpu')
-    TStokenizer2 = load_TStokenizer(vqvae_path2, eeg.shape, 'cpu')
-    TStokenizer3 = load_TStokenizer(vqvae_path3, fd.shape, 'cpu')
-    TStokenizer4 = load_TStokenizer(vqvae_path4, har.shape, 'cpu')
-    TStokenizer5 = load_TStokenizer(vqvae_path5, rwc.shape, 'cpu')
-    TStokenizers = [TStokenizer1, TStokenizer2, TStokenizer3, TStokenizer4, TStokenizer5]
+    TStokenizer_har = load_TStokenizer(vqvae_path, har.shape, 'cpu')
+    TStokenizers = [TStokenizer_har]
     tokenizer = MultiTokenizer(TStokenizers)
 
     TrainDataset = MultiDataset(
@@ -337,7 +273,7 @@ if __name__ == "__main__":
         TrainDataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=16,
         collate_fn=collate_fn_train,
     )
     TestDataset = MultiDataset(
@@ -352,7 +288,7 @@ if __name__ == "__main__":
         TestDataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=16,
         collate_fn=collate_fn_test,
     )
 
@@ -395,21 +331,8 @@ if __name__ == "__main__":
 
         save_path = os.path.join(run_path, 'output.txt')
         with open(save_path, 'w', encoding='utf-8') as file:
-            if args.dataset == 'mix' or args.dataset == 'geo':
-                file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text1))
-                file.write('\n')
-            if args.dataset == 'mix' or args.dataset == 'eeg':
-                file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text2))
-                file.write('\n')
-            if args.dataset == 'mix' or args.dataset == 'fd':
-                file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text3))
-                file.write('\n')
-            if args.dataset == 'mix' or args.dataset == 'har':
-                file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text4))
-                file.write('\n')
-            if args.dataset == 'mix' or args.dataset == 'rwc':
-                file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text7))
-                file.write('\n')
+            file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text_har))
+            file.write('\n')
 
             for i in range(500):
                 j = i * args.num_return_sequences

@@ -966,9 +966,9 @@ def process_har(data_folder='./data/HAR'):
     # samples_train = normalized_samples[:split]
     # samples_test = normalized_samples[split:]
 
-    with open('samples_train.pkl', 'wb') as file:
+    with open('datasets/HAR/samples_train.pkl', 'wb') as file:
         pickle.dump(normalized_samples_train, file)
-    with open('samples_test.pkl', 'wb') as file:
+    with open('datasets/HAR/samples_test.pkl', 'wb') as file:
         pickle.dump(normalized_samples_test, file)
 
     return normalized_samples_train, normalized_samples_test
@@ -1815,17 +1815,19 @@ def process_gender(Path='./ecg_no_big'):
 if __name__ == "__main__":
     setup_seed()
 
-    samples1, labels1 = process_esr()
-    text1, _, _ = samples1[0]
+    # samples1, labels1 = process_esr()
+    # text1, _, _ = samples1[0]
 
     # samples2, labels2 = process_cpsc_mul()
     # text2, _, _ = samples2[0]
 
-    print(text1)
-    print(len(samples1), len(labels1))
+    # print(text1)
+    # print(len(samples1), len(labels1))
     # print(text2)
     # print(len(samples1 + samples2), len(labels1 + labels2))
     # process_ptbxl(few=True)
     # process_12_lead()
+
+    process_har()
 
     exit(0)

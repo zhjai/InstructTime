@@ -5,8 +5,8 @@ def get_hyperparams():
 
     parser.add_argument("--seed", type=int, default=2024)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--model_path", type=str, default="./gptmodel", help="the path to save model.")
-    parser.add_argument("--load_model_path", type=str, default="./gptmodel", help="the path to load pretrained model.")
+    parser.add_argument("--model_path", type=str, default="./gpt2", help="the path to save model.")
+    parser.add_argument("--load_model_path", type=str, default="./gpt2", help="the path to load pretrained model.")
     parser.add_argument('--dataset', type=str, default='mix', choices=['har', 'geo', 'sleep', 'mix', 'esr', 'ad', 'dev', 'whale'])
 
     parser.add_argument("--batch_size", type=int, default=16)
