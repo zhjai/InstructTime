@@ -14,6 +14,7 @@ from collections import Counter
 from dataset import Dataset
 from args import args
 import torch.utils.data as Data
+from model import TStokenizer
 
 from matplotlib.ticker import FuncFormatter
 
@@ -145,7 +146,7 @@ def plot_square_like_heatmap(id_counts, save_path, shape=(8, 16), font_size=24):
 
 def main():
     seed_everything(seed=2023)
-    model_load_path = './test_ecg_64_128_40'
+    model_load_path = 'vqvae/HAR'
     output = []
 
     train_dataset = Dataset(device=args.device, mode='train', args=args)
@@ -156,7 +157,7 @@ def main():
     print(args.data_shape)
     print('dataset initial ends')
 
-    model = VQVAE(data_shape=args.data_shape, hidden_dim=args.d_model, n_embed=args.n_embed,
+    model = TStokenizer(data_shape=args.data_shape, hidden_dim=args.d_model, n_embed=args.n_embed,
                     wave_length=args.wave_length)
     print('model initial ends')
 
@@ -187,14 +188,17 @@ def main():
     save_output_to_file(''.join(output), os.path.join(model_load_path, 'model_output.txt'))
     print("Texts have been saved.")
 
-    file_path = '../ecg_no_big'
+    file_path = 'datasets/HAR'
     test_path = os.path.join(file_path, 'samples_test.pkl')
     samples_test = []
     if os.path.isfile(test_path):
         with open(test_path, 'rb') as file:
             samples_test = pickle.load(file)
-    random_samples = random.sample(samples_test, 20)
-    case_analysis(model, random_samples, model_load_path)
+    num_cases = min(len(samples_test), 20)
+    if num_cases > 0:
+        random_samples = random.sample(samples_test, num_cases)
+        case_analysis(model, random_samples, model_load_path)
+
 
 if __name__ == '__main__':
     main()

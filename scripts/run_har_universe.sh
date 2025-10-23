@@ -2,8 +2,9 @@ if [ ! -d "./logs" ]; then
     mkdir ./logs
 fi
 
-python run_truth_loss.py \
+torchrun --nproc_per_node=2 run_truth_loss.py \
     --dataset har \
     --epoch 100 \
-    --lr 0.001 \
+    --lr 5e-5 \
+    --model_path results \
     --adapt False >logs/finezero_har.log
