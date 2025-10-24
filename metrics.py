@@ -132,11 +132,25 @@ def metric_har(preds, labels, logger):
         'lying down': 5
     }
 
-    print(preds[0])
-    print(labels[0])
+    def normalize(stage: str) -> str:
+        if not isinstance(stage, str):
+            return ""
+        stage_norm = stage.strip().lower()
+        if stage_norm.endswith('.'):
+            stage_norm = stage_norm[:-1]
+        stage_norm = stage_norm.strip()
+        return stage_norm
 
-    preds_mapped = np.array([sleep_stages.get(stage, -1) for stage in preds])
-    labels_mapped = np.array([sleep_stages.get(stage, -1) for stage in labels])
+    preds_norm = [normalize(s) for s in preds]
+    labels_norm = [normalize(s) for s in labels]
+
+    if preds_norm:
+        print(preds[0])
+    if labels_norm:
+        print(labels[0])
+
+    preds_mapped = np.array([sleep_stages.get(stage, -1) for stage in preds_norm])
+    labels_mapped = np.array([sleep_stages.get(stage, -1) for stage in labels_norm])
     
     zero_preds = []
     zero_labels = []

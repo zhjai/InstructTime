@@ -27,7 +27,11 @@ def extract_all_information(text):
 def extract_from_text(text, keyword):
     index = text.find(keyword)
     if index != -1:
-        return text[index + len(keyword):] 
+        result = text[index + len(keyword):]
+        result = result.strip()
+        if "\n" in result:
+            result = result.split("\n", 1)[0]
+        return result.strip()
     return ""
 
 def load_params_from_json(json_file_path):

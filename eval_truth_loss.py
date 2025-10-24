@@ -2,12 +2,15 @@ import argparse  # 解析命令行参数
 import logging  # 简单日志输出
 import os  # 路径处理
 import pickle  # 读取样本缓存
+import re  # 提取思考/答案
 from typing import Optional  # 可选类型提示
 
 import torch  # 加载模型权重
 from torch.nn.parallel import DistributedDataParallel as DDP  # 多卡封装
 from torch.utils.data import DataLoader  # 构建数据加载器
 from torch.utils.data.distributed import DistributedSampler  # DDP 采样器
+
+import pandas as pd  # 导出结果
 
 import run_truth_loss as rtl  # 复用训练脚本中的工具函数
 
@@ -32,6 +35,12 @@ def build_arg_parser():
         type=str,
         default=None,
         help="可选：将评估日志写入指定文件",
+    )
+    parser.add_argument(
+        "--export_path",
+        type=str,
+        default=None,
+        help="若指定，将额外导出包含 prompt / groundtruth / think / answer 的 CSV 或 XLSX",
     )
     return parser
 
@@ -67,6 +76,20 @@ def locate_state_dict(path: str) -> str:
     if os.path.isfile(path):
         return path
     raise FileNotFoundError(f"未找到模型权重文件: {path}")
+
+
+THINK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+
+
+def split_think_answer(text: str):
+    if not isinstance(text, str):
+        return "", ""
+    think_match = THINK_PATTERN.search(text)
+    answer_match = ANSWER_PATTERN.search(text)
+    think = think_match.group(1).strip() if think_match else ""
+    answer = answer_match.group(1).strip() if answer_match else text.strip()
+    return think, answer
 
 
 def main():
@@ -125,10 +148,49 @@ def main():
         model = DDP(model, device_ids=device_ids, output_device=output_device, find_unused_parameters=False)
 
     logger.info("开始评估")
-    score = rtl.test(model, test_loader, eval_args, logger, out=False)
+    raw_preds, raw_labels = rtl.test(model, test_loader, eval_args, logger, out=True)
+
     if is_main:
+        # 计算准确率
+        pred_answers = [rtl.extract_all_information(p)[2] for p in raw_preds]
+        label_answers = [rtl.extract_all_information(l)[2] for l in raw_labels]
+        score, _, _ = rtl.metric_har(pred_answers, label_answers, logger)
         logger.info(f"评估得分: {score:.4f}")
         print("示例输入:", text_har)
+
+        if args.export_path:
+            prompts = []
+            for text, _, _ in samples_test:
+                idx = text.find("information.\n")
+                if idx != -1:
+                    prompt = text[: idx + len("information.\n")]
+                else:
+                    prompt = text
+                prompts.append(prompt.strip())
+
+            records = []
+            total = min(len(prompts), len(raw_labels), len(raw_preds))
+            for i in range(total):
+                think, answer = split_think_answer(raw_preds[i])
+                records.append(
+                    {
+                        "prompt": prompts[i],
+                        "groundtruth": raw_labels[i],
+                        "thinking": think,
+                        "generated_answer": answer,
+                        "prediction_raw": raw_preds[i],
+                    }
+                )
+
+            df = pd.DataFrame(records)
+            export_path = args.export_path
+            os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+            if export_path.lower().endswith(".xlsx"):
+                df.to_excel(export_path, index=False)
+            elif export_path.lower().endswith(".csv"):
+                df.to_csv(export_path, index=False)
+            else:
+                logger.warning("未识别的导出格式，请使用 .csv 或 .xlsx 后缀")
 
 
 if __name__ == "__main__":

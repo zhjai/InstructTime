@@ -1,11 +1,12 @@
-import torch
+import os
 import copy
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.generation.utils import GenerationMixin
 
-local_model_path = "./gpt2"
-local_tokenizer_path = "./gpt2"
+LOCAL_MODEL_DIR = "/data/zhjustc/InstructTime/qwen3-0.6b"
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
@@ -24,26 +25,33 @@ class MLP(nn.Module):
                 x = F.gelu(x)
         return x
     
-class InstructTime(GPT2LMHeadModel):
-    def __init__(self, config, ecgTokenizers, text_embedding=50258):
-        super().__init__(config)
+class InstructTime(GenerationMixin, nn.Module):
+    _is_stateful = False
+    def __init__(self, base_model: AutoModelForCausalLM, ecgTokenizers, text_embedding: int):
+        super().__init__()
+        self.base_model = base_model
+        self.config = self.base_model.config
+        self.generation_config = self.base_model.generation_config
         self.ecgTokenizers = ecgTokenizers
+        self.model_dtype = self.base_model.get_input_embeddings().weight.dtype
 
         embed_vector = torch.empty(0, self.ecgTokenizers[0].hidden_dim)
         for tokenizer in self.ecgTokenizers:
             tokenizer_embed_vector = copy.deepcopy(tokenizer.quantize.embed).transpose(-1, 0)
             embed_vector = torch.cat([embed_vector, tokenizer_embed_vector], dim=0)
-        self.embed_layer = nn.Embedding.from_pretrained(embed_vector)   
-        
+        self.embed_layer = nn.Embedding.from_pretrained(embed_vector)
+        self.embed_layer.weight.data = self.embed_layer.weight.data.to(self.model_dtype)
+
         self.text_embedding = text_embedding
-        self.embed = config.n_embd
-        self.config.pad_token_id = self.config.eos_token_id if self.config.pad_token_id is None else self.config.pad_token_id
+        self.embed = self.config.hidden_size
+        if self.config.pad_token_id is None:
+            self.config.pad_token_id = self.config.eos_token_id
 
         self.projection_layers = nn.ModuleList()
         for _ in ecgTokenizers:
             mlp = MLP(self.ecgTokenizers[0].hidden_dim, [64, 128, 256, 512], self.embed)
             mlp.apply(self.init_weights_kaiming)
-            self.projection_layers.append(mlp)
+            self.projection_layers.append(mlp.to(self.model_dtype))
 
         self.offsets = [self.text_embedding]
         for tokenizer in self.ecgTokenizers:
@@ -55,21 +63,18 @@ class InstructTime(GPT2LMHeadModel):
             nn.init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
             m.bias.data.fill_(0.01)
 
-    def forward(self, *args, **kwargs):
-        input_ids = kwargs["input_ids"]
+    def forward(self, input_ids=None, **kwargs):
+        if input_ids is None:
+            return self.base_model(**kwargs)
 
         text_mask = torch.lt(input_ids, self.text_embedding)
         ecg_mask = ~text_mask
-        
+
         text_ids = input_ids.clone()
         text_ids[ecg_mask] = self.config.pad_token_id
-        
-        text_embeddings = self.transformer.wte(text_ids)
-        text_embeddings.mul_(text_mask.float().unsqueeze(-1))
 
-        masked_ids = input_ids.clone()
-        masked_ids[text_mask] = 0
-        masked_ids[ecg_mask] -= self.text_embedding
+        text_embeddings = self.base_model.get_input_embeddings()(text_ids)
+        text_embeddings.mul_(text_mask.float().unsqueeze(-1))
 
         ecg_embeddings = torch.zeros_like(text_embeddings)
         for i, _ in enumerate(self.ecgTokenizers):
@@ -80,18 +85,58 @@ class InstructTime(GPT2LMHeadModel):
 
             tokenizer_embeddings = self.embed_layer(tokenizer_ids)
             tokenizer_embeddings = self.projection_layers[i](tokenizer_embeddings)
+            tokenizer_embeddings = tokenizer_embeddings.to(ecg_embeddings.dtype)
             tokenizer_embeddings.mul_(tokenizer_mask.float().unsqueeze(-1))
             ecg_embeddings.add_(tokenizer_embeddings)
 
-        kwargs["input_ids"] = None
-        kwargs["inputs_embeds"] = ecg_embeddings + text_embeddings 
-        
-        outputs = super().forward(*args, **kwargs)
-        return outputs    
+        kwargs["inputs_embeds"] = ecg_embeddings + text_embeddings
+
+        outputs = self.base_model(**kwargs)
+        return outputs
+
+    def prepare_inputs_for_generation(self, *args, **kwargs):
+        return self.base_model.prepare_inputs_for_generation(*args, **kwargs)
+
+    def _reorder_cache(self, past, beam_idx):
+        return self.base_model._reorder_cache(past, beam_idx)
+
+    def can_generate(self):
+        return True
+
+    def get_input_embeddings(self):
+        return self.base_model.get_input_embeddings()
+
+    def set_input_embeddings(self, new_embeddings):
+        return self.base_model.set_input_embeddings(new_embeddings)
+
+    def resize_token_embeddings(self, new_num_tokens):
+        return self.base_model.resize_token_embeddings(new_num_tokens)
+
+    def get_output_embeddings(self):
+        return self.base_model.get_output_embeddings()
+
+    def set_output_embeddings(self, new_embeddings):
+        return self.base_model.set_output_embeddings(new_embeddings)
+
+    def save_pretrained(self, save_directory: str):
+        os.makedirs(save_directory, exist_ok=True)
+        torch.save(self.state_dict(), os.path.join(save_directory, "pytorch_model.bin"))
+        self.config.architectures = ["InstructTime"]
+        self.config.save_pretrained(save_directory)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def main_input_name(self):
+        return self.base_model.main_input_name
 
 class MultiTokenizer:
     def __init__(self, ecgTokenizers) -> None:
-        self.textTokenizer = GPT2Tokenizer.from_pretrained(local_tokenizer_path)
+        self.textTokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_DIR)
+        if self.textTokenizer.pad_token is None:
+            self.textTokenizer.pad_token = self.textTokenizer.eos_token
         new_special_tokens = ["<BET>", "<EET>"]
         self.textTokenizer.add_special_tokens({"additional_special_tokens": new_special_tokens})
         self.text_vocab_size = len(self.textTokenizer)

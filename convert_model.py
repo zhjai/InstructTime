@@ -11,7 +11,7 @@ def parse_args():
     )
     parser.add_argument(
         "--model-dir",
-        default="InstructTime/results/gpt2-har-universe/best_model",
+        default="/data/zhjustc/InstructTime/qwen3-0.6b",
         help="包含 config.json / model.safetensors 的模型目录",  # 默认路径指向当前最佳模型
     )
     parser.add_argument(

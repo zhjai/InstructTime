@@ -10,10 +10,7 @@ import torch.nn as nn  # 导入神经网络模块
 from tqdm import tqdm  # 导入进度条工具 tqdm
 from torch.utils.data import DataLoader  # 导入数据加载器
 from torch.cuda.amp import autocast, GradScaler  # 导入自动混合精度工具
-from transformers import (
-    GPT2LMHeadModel,  # 导入 GPT-2 语言模型头
-    GPT2Config,  # 导入 GPT-2 配置类
-)
+from transformers import AutoModelForCausalLM, AutoConfig  # 导入自适应的语言模型与配置
 import torch.distributed as dist  # 导入分布式训练接口
 from torch.nn.parallel import DistributedDataParallel as DDP  # 导入分布式数据并行封装
 from torch.utils.data.distributed import DistributedSampler  # 导入分布式采样器
@@ -24,7 +21,7 @@ from args import get_hyperparams  # 导入超参数解析函数
 from metrics import metric_ecg, metric_eeg, metric_har, metric_fd, metric_rwc  # 导入多任务评估指标
 from utils import extract_all_information, load_TStokenizer  # 导入信息抽取与 tokenizer 加载工具
 
-local_model_path = "./gpt2"  # 指定本地 GPT-2 模型目录
+local_model_path = "/data/zhjustc/InstructTime/qwen3-0.6b"  # 指定本地 Qwen3-0.6B 模型目录
 vqvae_path = "./vqvae/HAR"  # 指定 HAR VQ-VAE 模型目录
 
 def setup_distributed(device_pref: str):  # 根据设备偏好配置分布式环境
@@ -104,6 +101,7 @@ def test(model, TestDataLoader, args, logger, out=False):  # 评估模型生成�
 
         all_extracted_info = []  # 保存解析后的预测信息
         all_sig_labels = []  # 保存解析后的标签信息
+        debug_print_limit = 10  # 限制打印条数，便于对比预测与标签
         if out:  # 如需输出详细文本
             print_labels = []  # 记录真实标签文本
             print_preds = []  # 记录生成预测文本
@@ -126,6 +124,13 @@ def test(model, TestDataLoader, args, logger, out=False):  # 评估模型生成�
             outputs[mask] = tokenizer.pad_token_id  # 将异常 token 替换为 pad
             outputs = outputs[:, args.encoder_max_length:]  # 去掉编码器输入部分
             decoded_texts = [tokenizer.decode(o, skip_special_tokens=True) for o in outputs]  # 转化为可读文本
+            if debug_print_limit > 0:
+                for pred_text, label_text in zip(decoded_texts, bt_labels):
+                    print(f"[Eval] pred: {pred_text}")
+                    print(f"[Eval] label: {label_text}")
+                    debug_print_limit -= 1
+                    if debug_print_limit <= 0:
+                        break
             all_extracted_info.extend([extract_all_information(dt) for dt in decoded_texts])  # 解析生成文本
             all_sig_labels.extend([extract_all_information(label) for label in bt_labels])  # 解析标签文本
             if out:  # 若需要导出文本
@@ -200,21 +205,29 @@ def setup_logging(run_path):  # 初始化日志配置
 
 def initialize_model(args, tokenizer, TStokenizers):  # 构建并初始化模型
     """构建并初始化模型
-    - 从本地 GPT-2 配置与权重加载文本侧参数
+    - 从本地 Qwen 配置与权重加载文本侧参数
     - 替换输出头为“文本 + HAR 离散 token”的总词表
     - 同步 config.vocab_size 以匹配新的输出维度
     """
-    config = GPT2Config.from_pretrained(local_model_path)  # 从本地加载 GPT-2 配置
-    model = InstructTime(config, TStokenizers, text_embedding=len(tokenizer.textTokenizer)).to(args.device)  # 初始化多模态模型并放至设备
+    config = AutoConfig.from_pretrained(local_model_path)  # 从本地加载 Qwen 配置
+    base_model = AutoModelForCausalLM.from_config(config)  # 根据配置构建骨干模型
+    model = InstructTime(base_model, TStokenizers, text_embedding=len(tokenizer.textTokenizer)).to(args.device)  # 初始化多模态模型并放至设备
 
-    pretrained_gpt2_model = GPT2LMHeadModel.from_pretrained(local_model_path)  # 加载预训练 GPT-2 权重
-    model.load_state_dict(pretrained_gpt2_model.state_dict(), strict=False)  # 非严格方式加载到多模态模型
+    torch_dtype = config.torch_dtype
+    if isinstance(torch_dtype, str):
+        torch_dtype = getattr(torch, torch_dtype)
+    pretrained_model = AutoModelForCausalLM.from_pretrained(local_model_path, torch_dtype=torch_dtype, low_cpu_mem_usage=False)  # 加载预训练 Qwen 权重
+    model.load_state_dict(pretrained_model.state_dict(), strict=False)  # 非严格方式加载到多模态模型
 
     # 先扩展词表（仅文本侧）以适配新增的特殊符号等
     model.resize_token_embeddings(len(tokenizer.textTokenizer))  # 扩展文本嵌入矩阵尺寸
     current_output = model.get_output_embeddings()  # 获取当前输出层
     # 替换输出头为“文本 + 时间序列离散 token”的总大小
-    new_output = nn.Linear(config.n_embd, tokenizer.vocabSize_all(), bias=False).to(args.device)  # 构建新的输出层
+    new_output = nn.Linear(
+        config.hidden_size,
+        tokenizer.vocabSize_all(),
+        bias=False,
+    ).to(device=args.device, dtype=current_output.weight.dtype)  # 构建新的输出层
     new_output.weight.data[:len(tokenizer.textTokenizer)] = current_output.weight.data  # 保留原有文本部分权重
     model.set_output_embeddings(new_output)  # 替换输出层
     # 同步配置中的词表大小，避免损失 reshape 报错
@@ -233,19 +246,23 @@ def train_model(model, args, TrainDataLoader, TestDataLoader, optimizer, schedul
     """
     best = 0.0  # 记录目前最佳准确率
     tolerance_metric = -float("inf")  # 记录用于早停的对比指标
-    patience = 5  # 设定早停耐心轮数
+    patience = 100  # 设定早停耐心轮数
     wait = 0  # 已连续未提升的轮数
         
     # 设置采样器
     train_sampler = getattr(TrainDataLoader, "sampler", None)  # 获取训练数据采样器
+    model_dtype = getattr(model, "model_dtype", getattr(getattr(model, "module", None), "model_dtype", torch.float32))
+
     for epoch in range(args.epochs):  # 遍历训练轮
         if distributed and isinstance(train_sampler, DistributedSampler):  # 分布式情况下重设采样器
             # 设定 epoch 保证各进程采样不同切片
             train_sampler.set_epoch(epoch)  # 将 epoch 传入采样器
         step, train_losses = 0, 0.0  # 初始化步数和损失
-        tqdm_iter = tqdm(TrainDataLoader, desc=f"GPT Epoch {epoch+1}", ncols=120, disable=not is_main_process)  # 主进程显示进度条
+        tqdm_iter = tqdm(TrainDataLoader, desc=f"Qwen Epoch {epoch+1}", ncols=120, disable=not is_main_process)  # 主进程显示进度条
         
         model.train()  # 切换模型为训练模式
+        amp_dtype = torch.float16 if model_dtype == torch.float16 else None
+        current_lr = optimizer.param_groups[0]["lr"]
         for data in tqdm_iter:  # 遍历每个批次
 
             input_ids = data["input_ids"].to(args.device)  # 将输入转移到目标设备
@@ -253,7 +270,10 @@ def train_model(model, args, TrainDataLoader, TestDataLoader, optimizer, schedul
             label_ids = data["label_ids"].to(args.device)  # 将标签转移到目标设备
             
             # 混合精度前向与损失计算
-            with autocast():  # 启用混合精度
+            autocast_kwargs = {"enabled": torch.cuda.is_available() and amp_dtype is not None}
+            if amp_dtype is not None:
+                autocast_kwargs["dtype"] = amp_dtype
+            with autocast(**autocast_kwargs):  # 启用混合精度
                 outputs = model(
                             input_ids=input_ids,  # 输入 token 张量
                             attention_mask=attention_mask,  # 输入掩码
@@ -265,17 +285,24 @@ def train_model(model, args, TrainDataLoader, TestDataLoader, optimizer, schedul
             scaler.step(optimizer)  # 执行优化步
             scaler.update()  # 更新放缩因子
             scheduler.step()  # 更新学习率
+            current_lr = scheduler.get_last_lr()[0] if scheduler is not None else optimizer.param_groups[0]["lr"]
             optimizer.zero_grad()  # 清空梯度
 
             loss_value = outputs.loss.cpu().item()  # 将损失搬到 CPU 取标量
             train_losses += loss_value  # 累积损失
             step += 1  # 统计步数
             if is_main_process:  # 主进程更新进度信息
-                tqdm_iter.set_postfix({"loss": format(train_losses / step, ".4f")})  # 显示当前平均损失
+                tqdm_iter.set_postfix({
+                    "loss": format(train_losses / step, ".4f"),
+                    "lr": f"{current_lr:.2e}",
+                })  # 显示当前平均损失和学习率
+                logger.info(
+                    f"Epoch {epoch+1} Step {step}: loss={loss_value:.6f}, lr={current_lr:.6e}"
+                )
 
         final_loss = format(train_losses / step, ".4f")  # 计算最终平均损失
         if is_main_process:  # 仅主进程记录
-            logger.info(f"Epoch {epoch+1}\nLoss: {final_loss}")  # 写入损失日志
+            logger.info(f"Epoch {epoch+1}\nLoss: {final_loss}; lr={current_lr:.6e}")  # 写入损失日志
         
         # 评估前同步各进程，rank0 执行评估，随后广播分数
         if distributed:  # 分布式模式下同步
@@ -422,12 +449,14 @@ if __name__ == "__main__":  # 程序入口
             dist.broadcast_object_list(obj, src=0)
             baseline = obj[0]
             
+        model_dtype = getattr(model, "model_dtype", getattr(getattr(model, "module", None), "model_dtype", torch.float32))
+
         param_dict = [{"params": model.parameters(), "lr": args.lr}]  # 构建优化器参数组
         optimizer = torch.optim.Adam(param_dict, weight_decay=1e-5)  # 初始化 Adam 优化器
         scheduler = transformers.optimization.get_cosine_schedule_with_warmup(
             optimizer, num_warmup_steps=args.epochs * len(TrainDataLoader) * args.warm_up_ratio, num_training_steps=args.epochs * len(TrainDataLoader)
         )  # 构建余弦退火调度
-        scaler = GradScaler()  # 创建混合精度缩放器
+        scaler = GradScaler(enabled=torch.cuda.is_available() and model_dtype == torch.float16)  # 创建混合精度缩放器（仅在 fp16 时启用）
 
         if is_main_process:  # 主进程记录日志
             logger.info(f"Begin training for run {run}")  # 记录训练开始信息
