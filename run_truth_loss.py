@@ -24,8 +24,9 @@ from args import get_hyperparams  # 导入超参数解析函数
 from metrics import metric_ecg, metric_eeg, metric_har, metric_fd, metric_rwc  # 导入多任务评估指标
 from utils import extract_all_information, load_TStokenizer  # 导入信息抽取与 tokenizer 加载工具
 
+file_path = "./datasets"  # 数据集根目录
 local_model_path = "./gpt2"  # 指定本地 GPT-2 模型目录
-vqvae_path = "./vqvae/HAR"  # 指定 HAR VQ-VAE 模型目录
+vqvae_root = "./vqvae"  # 指定 VQ-VAE 根目录
 
 def setup_distributed(device_pref: str):  # 根据设备偏好配置分布式环境
     """分布式初始化
@@ -233,7 +234,7 @@ def train_model(model, args, TrainDataLoader, TestDataLoader, optimizer, schedul
     """
     best = 0.0  # 记录目前最佳准确率
     tolerance_metric = -float("inf")  # 记录用于早停的对比指标
-    patience = 5  # 设定早停耐心轮数
+    patience = 100  # 设定早停耐心轮数
     wait = 0  # 已连续未提升的轮数
         
     # 设置采样器
@@ -321,32 +322,163 @@ if __name__ == "__main__":  # 程序入口
     args.device = device  # 更新配置中的设备
     is_main_process = (rank == 0)  # 标记是否为主进程
 
-    if args.dataset.lower() != 'har':  # 仅允许 HAR 数据集配置
-        raise ValueError("This configuration only supports the 'har' dataset when using the single HAR tokenizer.")  # 抛出不支持异常
+    
+    dataset_key = args.dataset.lower()
+    alias_map = {"sleep": "eeg", "dev": "fd", "whale": "rwc"}
+    dataset_key = alias_map.get(dataset_key, dataset_key)
 
-    file_path = 'datasets/HAR'  # 数据集根目录
-    train_path = os.path.join(file_path, 'samples_train.pkl')  # 训练集文件路径
-    test_path = os.path.join(file_path, 'samples_test.pkl')  # 测试集文件路径
-    if os.path.isfile(train_path) and os.path.isfile(test_path):  # 检查文件是否存在
-        with open(train_path, 'rb') as file:  # 打开训练集文件
-            samples_train_har = pickle.load(file)  # 加载训练样本
-        with open(test_path, 'rb') as file:  # 打开测试集文件
-            samples_test_har = pickle.load(file)  # 加载测试样本
-    else:  # 若数据缺失
-        raise FileNotFoundError(f"HAR dataset not found in {file_path}")  # 抛出文件缺失错误
+    DATASET_CONFIG = {
+        "geo": {
+            "data_subdirs": ["ecg_no_big", "ECG", "ecg", "GEO", "geo"],
+            "vqvae_subdirs": ["GEO", "geo"],
+            "prefix": "You will be receiving electrocardiogram(ECG) related signals.\n",
+        },
+        "eeg": {
+            "data_subdirs": ["eeg_no_big", "EEG", "eeg"],
+            "vqvae_subdirs": ["test_eeg_64_256_25", "EEG"],
+            "prefix": "You will be receiving electroencephalogram(EEG) related signals.\n",
+        },
+        "fd": {
+            "data_subdirs": ["device_no_big", "FD"],
+            "vqvae_subdirs": ["test_fd_64_512_40", "FD"],
+            "prefix": "You will be receiving industrial equipment related signals.\n",
+        },
+        "har": {
+            "data_subdirs": ["har_no_big", "HAR"],
+            "vqvae_subdirs": ["test_har_64_256_1", "HAR"],
+            "prefix": "You will be receiving human physical activities related signals.\n",
+        },
+        "rwc": {
+            "data_subdirs": ["rwc_no_big", "RWC"],
+            "vqvae_subdirs": ["test_rwc_64_384_32", "RWC"],
+            "prefix": "You will be receiving sound related signals.\n",
+        },
+    }
+    MIX_ORDER = ["geo", "eeg", "har", "fd", "rwc"]
+    MIX_PREFIX = ("You will be receiving signals from five domains: electrocardiogram, "
+                  "electroencephalogram, industrial equipment, sound and physical activities.\n")
 
-    text_har, har, _ = samples_train_har[0]  # 取首个样本获取文本和信号形状
-    print(len(samples_train_har) + len(samples_test_har), len(samples_train_har), len(samples_test_har))  # 打印样本数量统计
-    print(text_har)  # 打印样本文本
-        
-    print('preprocess done')  # 提示预处理完成
+    def extract_text_signal(sample):
+        if isinstance(sample, dict):
+            text = sample.get("text", "")
+            signal = sample.get("ts")
+        elif isinstance(sample, (list, tuple)) and len(sample) >= 2:
+            text = sample[0]
+            signal = sample[1]
+        else:
+            raise ValueError("Unsupported sample format; expected dict or tuple/list with text and signal")
+        if signal is None:
+            raise ValueError("Signal tensor missing in sample; ensure dataset format is (text, ts, label) or dict with 'ts'.")
+        return text, signal
 
-    samples_train_combined = samples_train_har  # 训练样本集合
-    samples_test_combined = samples_test_har  # 测试样本集合
-    PREFIX_TEXT = "You will be receiving human physical activities related signals.\n"  # 输入提示前缀
+    def count_vl(samples):
+        return sum(
+            1
+            for s in samples
+            if isinstance(s, dict) and isinstance(s.get("vl_response"), str) and s["vl_response"].strip()
+        )
 
-    TStokenizer_har = load_TStokenizer(vqvae_path, har.shape, 'cpu')  # 加载 HAR 离散化器
-    TStokenizers = [TStokenizer_har]  # 封装成列表便于多模态接口
+    def load_dataset_bundle(key):
+        if key not in DATASET_CONFIG:
+            raise ValueError(f"Unsupported dataset '{key}'. Available: {list(DATASET_CONFIG.keys())}")
+        info = DATASET_CONFIG[key]
+        data_dir = None
+        train_path = test_path = None
+        for candidate in info["data_subdirs"]:
+            candidate_dir = os.path.join(file_path, candidate)
+            candidate_train = os.path.join(candidate_dir, "samples_train.pkl")
+            candidate_test = os.path.join(candidate_dir, "samples_test.pkl")
+            if os.path.isfile(candidate_train) and os.path.isfile(candidate_test):
+                data_dir = candidate_dir
+                train_path = candidate_train
+                test_path = candidate_test
+                break
+        if data_dir is None:
+            searched = [os.path.join(file_path, cand) for cand in info["data_subdirs"]]
+            raise FileNotFoundError(
+                f"Missing dataset split for '{key}'. Checked directories: {searched}."
+            )
+        with open(train_path, 'rb') as f:
+            train_samples = pickle.load(f)
+        with open(test_path, 'rb') as f:
+            test_samples = pickle.load(f)
+        text_example, signal = extract_text_signal(train_samples[0])
+        total_msg = (
+            f"{key.upper()} samples: total {len(train_samples) + len(test_samples)} "
+            f"(train {len(train_samples)}, test {len(test_samples)})"
+        )
+        print(total_msg)
+        print(text_example)
+        log_messages.append(total_msg)
+        log_messages.append(f"{key.upper()} train file: {train_path}")
+        log_messages.append(f"{key.upper()} test file: {test_path}")
+        log_messages.append(f"{key.upper()} example text: {text_example}")
+        vl_train = count_vl(train_samples)
+        vl_test = count_vl(test_samples)
+        if vl_train or vl_test:
+            log_messages.append(
+                f"{key.upper()} train samples with vl_response: {vl_train}/{len(train_samples)}"
+            )
+            log_messages.append(
+                f"{key.upper()} test samples with vl_response: {vl_test}/{len(test_samples)}"
+            )
+        tokenizer_path = None
+        for candidate in info["vqvae_subdirs"]:
+            candidate_path = os.path.join(vqvae_root, candidate)
+            if os.path.isdir(candidate_path):
+                tokenizer_path = candidate_path
+                break
+        if tokenizer_path is None:
+            searched_tok = [os.path.join(vqvae_root, cand) for cand in info["vqvae_subdirs"]]
+            raise FileNotFoundError(
+                f"Tokenizer path not found for '{key}'. Checked directories: {searched_tok}."
+            )
+
+        return {
+            "key": key,
+            "train": train_samples,
+            "test": test_samples,
+            "text": text_example,
+            "signal": signal,
+            "prefix": info["prefix"],
+            "tokenizer_path": tokenizer_path,
+            "train_path": train_path,
+            "test_path": test_path,
+        }
+
+    if dataset_key == "mix":
+        selected_keys = MIX_ORDER
+    else:
+        selected_keys = [dataset_key]
+
+    log_messages = []
+    bundles = [load_dataset_bundle(key) for key in selected_keys]
+
+    example_inputs = [(bundle["key"], bundle["text"]) for bundle in bundles]
+
+    if dataset_key == "mix":
+        samples_train_combined = []
+        samples_test_combined = []
+        for bundle in bundles:
+            samples_train_combined.extend(bundle["train"])
+            samples_test_combined.extend(bundle["test"])
+        random.shuffle(samples_train_combined)
+        random.shuffle(samples_test_combined)
+        PREFIX_TEXT = MIX_PREFIX
+    else:
+        bundle = bundles[0]
+        samples_train_combined = bundle["train"]
+        samples_test_combined = bundle["test"]
+        PREFIX_TEXT = bundle["prefix"]
+
+    print('preprocess done')
+
+    TStokenizers = []
+    for bundle in bundles:
+        tokenizer_path = bundle["tokenizer_path"]
+        TStokenizers.append(load_TStokenizer(tokenizer_path, bundle["signal"].shape, 'cpu'))
+        log_messages.append(f"{bundle['key'].upper()} tokenizer path: {tokenizer_path}")
+
     tokenizer = MultiTokenizer(TStokenizers)  # 构建多模态 tokenizer
 
     TrainDataset = MultiDataset(
@@ -404,6 +536,9 @@ if __name__ == "__main__":  # 程序入口
         run_path = os.path.join(model_subpath, f"run_{run}")  # 每次运行的存储目录
         os.makedirs(run_path, exist_ok=True)  # 创建运行目录
         logger = setup_logging(run_path) if is_main_process else logging.getLogger(f"rank_{rank}")  # 主进程创建日志记录器
+        if is_main_process:
+            for msg in log_messages:
+                logger.info(msg)
 
         for param in model.parameters():  # 遍历模型参数
             param.requires_grad = True  # 确保参数可训练
@@ -446,14 +581,16 @@ if __name__ == "__main__":  # 程序入口
 
                 save_path = os.path.join(run_path, 'output.txt')  # 输出文件路径
                 with open(save_path, 'w', encoding='utf-8') as file:  # 打开输出文件
-                    file.write("Input Sequence: \n{}\n".format(PREFIX_TEXT + text_har))  # 写入输入序列
-                    file.write('\n')  # 添加空行
+                    for name, example_text in example_inputs:
+                        file.write(f"Input Sequence ({name.upper()}): \n{PREFIX_TEXT + example_text}\n")
+                        file.write('\n')
 
-                    for i in range(min(500, len(print_labels))):  # 限制输出条数
-                        j = i * args.num_return_sequences  # 计算预测索引
-                        for k in range(args.num_return_sequences):  # 遍历每个返回序列
-                            file.write("Generated Text: {}\n".format(print_preds[j + k]))  # 写入生成文本
-                        file.write("Actual Label: {}\n".format(print_labels[i]))  # 写入真实标签
-                        file.write('\n')  # 分隔空行
+                    limit = min(500, len(print_labels))
+                    for i in range(limit):
+                        j = i * args.num_return_sequences
+                        for k in range(args.num_return_sequences):
+                            file.write(f"Generated Text: {print_preds[j + k]}\n")
+                        file.write(f"Actual Label: {print_labels[i]}\n")
+                        file.write('\n')
 
                 logger.handlers.clear()  # 清理日志处理器避免重复添加

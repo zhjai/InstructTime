@@ -7,7 +7,7 @@ def get_hyperparams():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--model_path", type=str, default="./gpt2", help="the path to save model.")
     parser.add_argument("--load_model_path", type=str, default="./gpt2", help="the path to load pretrained model.")
-    parser.add_argument('--dataset', type=str, default='mix', choices=['har', 'geo', 'sleep', 'mix', 'esr', 'ad', 'dev', 'whale'])
+    parser.add_argument('--dataset', type=str, default='mix', choices=['har', 'geo', 'sleep', 'mix', 'esr', 'ad', 'dev', 'whale', 'eeg', 'fd', 'rwc', 'ecg'])
 
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--per_max_token", type=int, default=32, help="The maximum number of tokens for a label.")

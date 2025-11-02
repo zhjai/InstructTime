@@ -6,7 +6,7 @@ from datautils import load_all_data
 parser = argparse.ArgumentParser()
 # dataset and dataloader args
 parser.add_argument('--save_path', type=str, default='./test')
-parser.add_argument('--dataset', type=str, default='eeg', choices=['har', 'geo', 'sleep', 'dev', 'ecg', 'whale', 'ad', 'esr'])
+parser.add_argument('--dataset', type=str, default='eeg', choices=['har', 'geo', 'sleep', 'dev', 'ecg', 'whale', 'ad', 'esr', 'fd', 'eeg', 'rwc'])
 parser.add_argument('--data_path', type=str, default=None)
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--train_batch_size', type=int, default=32)
@@ -28,11 +28,11 @@ parser.add_argument('--block_num', type=int, default=4)
 parser.add_argument('--dilations', type=list, default=[1, 4])
 
 # train args
-parser.add_argument('--lr', type=float, default=0.0005)
+parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--lr_decay_rate', type=float, default=0.99)
 parser.add_argument('--lr_decay_steps', type=int, default=300)
 parser.add_argument('--weight_decay', type=float, default=1e-5)
-parser.add_argument('--num_epoch', type=int, default=60)
+parser.add_argument('--num_epoch', type=int, default=100)
 
 args = parser.parse_args()
 if args.data_path is None:

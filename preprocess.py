@@ -9,6 +9,9 @@ import torch
 import pickle
 import pandas as pd
 import random
+import zipfile
+import io
+from scipy.io import arff
 from collections import Counter
 import neurokit2 as nk
 
@@ -793,7 +796,7 @@ def process_ecg_data(data_folder, dict_path, multi_folder=False, only_label=Fals
             text = pro_text(header.comments, diction1, only_label)
             ecg = pro_ecg(signals)
             if ecg.shape == (5000, 12):
-                return (text, ecg.transpose(-1, 0), label_vector)
+                return (text, ecg, label_vector)
             else:
                 return None
 
@@ -1155,6 +1158,53 @@ def process_esr(data_folder='./data/HAR'):
 
     return normalized_samples_train, normalized_samples_test
 
+
+def process_rwc(zip_path='./raw_data/RWC/RightWhaleCalls.zip', output_dir='./vqvae/RWC'):
+    label_map = {
+        'RightWhale': ('the right whale', 0),
+        'NoWhale': ('unknown creature', 1),
+    }
+    midfix = "Underwater hydrophones captured acoustic signals from areas inhabited by right whales.\n"
+    prefix = (
+        "Please choose one sound source from the previously mentioned two options and analyze the recording based on the provided information.\n"
+        "The sound originates from "
+    )
+
+    def build_samples(records):
+        samples = []
+        for row in records:
+            row_list = row.tolist()
+            signal = np.asarray(row_list[:-1], dtype=np.float32).reshape(-1, 1)
+            signal = normalize(signal)
+            raw_label = row_list[-1]
+            if isinstance(raw_label, bytes):
+                raw_label = raw_label.decode('utf-8')
+            mapped = label_map.get(raw_label)
+            if mapped is None:
+                continue
+            label_text, label_id = mapped
+            text_prompt = midfix + prefix + label_text
+            samples.append((text_prompt, signal, np.int64(label_id)))
+        return samples
+
+    with zipfile.ZipFile(zip_path) as zf:
+        with zf.open('RightWhaleCalls_TRAIN.arff') as train_file:
+            train_records, _ = arff.loadarff(io.TextIOWrapper(train_file, encoding='utf-8'))
+        with zf.open('RightWhaleCalls_TEST.arff') as test_file:
+            test_records, _ = arff.loadarff(io.TextIOWrapper(test_file, encoding='utf-8'))
+
+    samples_train = build_samples(train_records)
+    samples_test = build_samples(test_records)
+
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, 'samples_train.pkl'), 'wb') as file:
+        pickle.dump(samples_train, file)
+    with open(os.path.join(output_dir, 'samples_test.pkl'), 'wb') as file:
+        pickle.dump(samples_test, file)
+
+    return samples_train, samples_test
+
+
 def process_UWG(data_folder='./data/UWG'):
     normalized_samples_train = []
     normalized_samples_test = []
@@ -1388,8 +1438,8 @@ def process_device(data_folder='./data/device'):
 
         if text == '':
             continue
-        text = midfix + prefix + text  
-        label_vector = label
+        text = midfix + prefix + text
+        label_vector = np.int64(label)
         if ecg.shape == (5120, 1):
             normalized_samples_train.append((text, ecg, label_vector))
 
@@ -1412,10 +1462,10 @@ def process_device(data_folder='./data/device'):
 
         if text == '':
             continue
-        text = midfix + prefix + text  
-        label_vector = label
+        text = midfix + prefix + text
+        label_vector = np.int64(label)
         if ecg.shape == (5120, 1):
-            normalized_samples_train.append((text, ecg, label_vector))
+            normalized_samples_test.append((text, ecg, label_vector))
 
     with open('samples_train.pkl', 'wb') as file:
         pickle.dump(normalized_samples_train, file)
