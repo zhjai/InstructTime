@@ -1,0 +1,27 @@
+{
+ "save_path": "./test",
+ "dataset": "eeg",
+ "data_path": null,
+ "device": "cuda:0",
+ "train_batch_size": 32,
+ "test_batch_size": 64,
+ "d_model": 64,
+ "dropout": 0.2,
+ "eval_per_steps": 300,
+ "enable_res_parameter": 1,
+ "n_embed": 2560,
+ "wave_length": 25,
+ "mask_prob": 0.2,
+ "pooling_type": "mean",
+ "kernel_size": 3,
+ "block_num": 4,
+ "dilations": [
+  1,
+  4
+ ],
+ "lr": 0.0005,
+ "lr_decay_rate": 0.99,
+ "lr_decay_steps": 300,
+ "weight_decay": 1e-05,
+ "num_epoch": 60
+}

@@ -146,7 +146,7 @@ def plot_square_like_heatmap(id_counts, save_path, shape=(8, 16), font_size=24):
 
 def main():
     seed_everything(seed=2023)
-    model_load_path = 'vqvae/HAR'
+    model_load_path = './vqvae/FD'
     output = []
 
     train_dataset = Dataset(device=args.device, mode='train', args=args)
@@ -188,7 +188,7 @@ def main():
     save_output_to_file(''.join(output), os.path.join(model_load_path, 'model_output.txt'))
     print("Texts have been saved.")
 
-    file_path = 'datasets/HAR'
+    file_path = 'datasets/FD'
     test_path = os.path.join(file_path, 'samples_test.pkl')
     samples_test = []
     if os.path.isfile(test_path):

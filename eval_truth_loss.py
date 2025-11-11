@@ -19,12 +19,10 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="评估 InstructTime HAR 模型性能")
     parser.add_argument("--seed", type=int, default=2024)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument(
-        "--load_model_path",
-        type=str,
-        required=True,
-        help="包含 pytorch_model.bin 的目录或文件路径",
-    )
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="包含 pytorch_model.bin 的目录或文件路径")
+    parser.add_argument("--data_path", type=str, default="datasets/HAR")
+    parser.add_argument("--local_model_path", type=str, default="/data/zhjustc/InstructTime/qwen3-0.6b")
+    parser.add_argument("--vqvae_path", type=str, default="./vqvae/HAR")
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--per_max_token", type=int, default=32)
     parser.add_argument("--encoder_max_length", type=int, default=230)
@@ -55,12 +53,25 @@ def prepare_logger(log_file: Optional[str]):
     return logger
 
 
-def load_datasets():
-    file_path = "datasets/HAR"
-    train_path = os.path.join(file_path, "samples_train.pkl")
-    test_path = os.path.join(file_path, "samples_test.pkl")
-    if not (os.path.isfile(train_path) and os.path.isfile(test_path)):
-        raise FileNotFoundError(f"HAR 数据集未找到：{file_path}")
+def load_datasets(data_path: str):
+    if not os.path.isdir(data_path):
+        raise FileNotFoundError(f"HAR 数据集未找到：{data_path}")
+
+    def pick(split: str) -> str:
+        split_key = split.lower()
+        candidates = [
+            fname
+            for fname in os.listdir(data_path)
+            if fname.lower().endswith(".pkl") and split_key in fname.lower()
+        ]
+        if not candidates:
+            raise FileNotFoundError(f"在 {data_path} 未找到包含 '{split}' 的 PKL 文件")
+        if len(candidates) > 1:
+            raise ValueError(f"在 {data_path} 找到多个 '{split}' PKL 文件：{candidates}")
+        return os.path.join(data_path, candidates[0])
+
+    train_path = pick("train")
+    test_path = pick("test")
     with open(train_path, "rb") as file:
         samples_train = pickle.load(file)
     with open(test_path, "rb") as file:
@@ -102,11 +113,11 @@ def main():
     logger = prepare_logger(args.log_file if is_main else None)
     logger.info("开始加载数据与模型")
 
-    samples_train, samples_test = load_datasets()
+    samples_train, samples_test = load_datasets(args.data_path)
     text_har, har, _ = samples_train[0]
 
-    tokenizer_har = rtl.load_TStokenizer(rtl.vqvae_path, har.shape, "cpu")
-    tokenizer = rtl.MultiTokenizer([tokenizer_har])
+    tokenizer_har = rtl.load_TStokenizer(args.vqvae_path, har.shape, "cpu")
+    tokenizer = rtl.MultiTokenizer([tokenizer_har], args.local_model_path)
     rtl.tokenizer = tokenizer  # test 函数依赖模块级 tokenizer
 
     test_dataset = rtl.MultiDataset(
@@ -135,10 +146,11 @@ def main():
         per_max_token=args.per_max_token,
         encoder_max_length=args.encoder_max_length,
         dataset="har",
+        local_model_path=args.local_model_path,
     )
 
-    model, _ = rtl.initialize_model(eval_args, tokenizer, [tokenizer_har])
-    state_path = locate_state_dict(args.load_model_path)
+    model = rtl.initialize_model(eval_args, tokenizer, [tokenizer_har])
+    state_path = locate_state_dict(args.checkpoint_path)
     state_dict = torch.load(state_path, map_location=device)
     model.load_state_dict(state_dict, strict=False)
 

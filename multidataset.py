@@ -28,22 +28,49 @@ class MultiDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        text, ecg, _ = self.samples[idx]
+        sample = self.samples[idx]
 
-        dx_index = text.find("information.\n")
-        if dx_index != -1:
-            label = text[dx_index + 13:]
-            text = text[:dx_index + 13]
+        vl_response = None
+        if isinstance(sample, dict):
+            text = sample.get("text", "")
+            ecg = sample.get("ts")
+            extra = sample.get("extra")
+            vl_response = sample.get("vl_response")
+        elif isinstance(sample, (list, tuple)) and len(sample) >= 3:
+            text, ecg, extra = sample[:3]
+            if len(sample) > 3 and isinstance(sample[3], str) and not vl_response:
+                vl_response = sample[3]
         else:
-            label = ''
+            raise TypeError(f"Unsupported sample format at index {idx}: {type(sample)}")
+
+        if isinstance(extra, dict) and not vl_response:
+            vl_response = extra.get("vl_response")
+
+        split_token = "information.\n"
+        dx_index = text.find(split_token)
+        if dx_index != -1:
+            label = text[dx_index + len(split_token):]
+            prompt_text = text[:dx_index + len(split_token)]
+        else:
+            label = ""
+            prompt_text = text
+
+        if isinstance(vl_response, str) and vl_response.strip():
+            prompt_text = (
+                prompt_text.rstrip()
+                + "\nImage description JSON:\n"
+                + vl_response.strip()
+                + "\n"
+            )
+
         label_ids = self.tokenizer.encode(label)
 
         if self.mode == "train":
-            text = text + label
+            combined_text = prompt_text + label
         else:
-            text = text
+            combined_text = prompt_text
 
-        input_ids = self.template(ecg * 2.5, text)
+        input_ids = self.template(ecg * 2.5, combined_text)
         label_ids = [-100] * (len(input_ids) - len(label_ids)) + label_ids
         
         attn_masks = [1] * len(input_ids)

@@ -1,8 +1,8 @@
-DATASET=HAR
+DATASET=RWC
 
 python main.py \
 --save_path ../vqvae/$DATASET \
---dataset har \
+--dataset whale \
 --data_path ../datasets/$DATASET \
---n_embed 2560 \
---wave_length 1 \
+--n_embed 384 \
+--wave_length 32 \

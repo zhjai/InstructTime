@@ -793,7 +793,7 @@ def process_ecg_data(data_folder, dict_path, multi_folder=False, only_label=Fals
             text = pro_text(header.comments, diction1, only_label)
             ecg = pro_ecg(signals)
             if ecg.shape == (5000, 12):
-                return (text, ecg.transpose(-1, 0), label_vector)
+                return (text, ecg, label_vector)
             else:
                 return None
 

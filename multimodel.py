@@ -6,8 +6,6 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.generation.utils import GenerationMixin
 
-LOCAL_MODEL_DIR = "/data/zhjustc/InstructTime/qwen3-0.6b"
-
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
         super(MLP, self).__init__()
@@ -133,8 +131,8 @@ class InstructTime(GenerationMixin, nn.Module):
         return self.base_model.main_input_name
 
 class MultiTokenizer:
-    def __init__(self, ecgTokenizers) -> None:
-        self.textTokenizer = AutoTokenizer.from_pretrained(LOCAL_MODEL_DIR)
+    def __init__(self, ecgTokenizers, text_model_dir: str) -> None:
+        self.textTokenizer = AutoTokenizer.from_pretrained(text_model_dir)
         if self.textTokenizer.pad_token is None:
             self.textTokenizer.pad_token = self.textTokenizer.eos_token
         new_special_tokens = ["<BET>", "<EET>"]

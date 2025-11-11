@@ -1,8 +1,8 @@
-DATASET=HAR
+DATASET=GEO
 
 python main.py \
 --save_path ../vqvae/$DATASET \
---dataset har \
+--dataset geo \
 --data_path ../datasets/$DATASET \
---n_embed 2560 \
---wave_length 1 \
+--n_embed 128 \
+--wave_length 40 \

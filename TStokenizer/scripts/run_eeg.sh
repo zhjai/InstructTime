@@ -1,8 +1,8 @@
-DATASET=HAR
+DATASET=EEG
 
 python main.py \
 --save_path ../vqvae/$DATASET \
---dataset har \
+--dataset sleep \
 --data_path ../datasets/$DATASET \
---n_embed 2560 \
---wave_length 1 \
+--n_embed 256 \
+--wave_length 25 \
